@@ -1,0 +1,54 @@
+name: greenish
+description: '20-20-20 eye care reminder app - protect your eyes with regular breaks.'
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # UI & Theme
+  dynamic_color: ^1.7.0 # Material 3 dynamic color (wallpaper/system accent)
+
+  # State & Storage
+  shared_preferences: ^2.3.0 # Local settings persistence
+
+  # Android foreground service
+  flutter_foreground_task: ^8.10.0 # Foreground service for Android keep-alive
+
+  # Android overlay (Dynamic Island style)
+  flutter_overlay_window: ^0.4.5 # System overlay for Android reminder popup
+
+  # Windows window management
+  window_manager: ^0.4.0 # Window control for desktop (main window)
+  desktop_multi_window: ^0.1.0 # Multi-window support for Windows reminder popup
+
+  # Notifications
+  flutter_local_notifications: ^18.0.0 # Cross-platform notifications (fallback)
+
+  # Audio & Haptics
+  audioplayers: ^6.1.0 # Cross-platform audio playback
+  vibration: ^2.0.0 # Android haptic feedback
+
+  # Screen state & lifecycle
+  wakelock_plus: ^1.2.0 # Keep screen on during rest countdown
+
+  # Battery optimization
+  disable_battery_optimization: ^1.1.1 # Request battery optimization exemption
+
+  # System tray (Windows)
+  system_tray: ^2.0.3 # Windows system tray icon
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/sounds/

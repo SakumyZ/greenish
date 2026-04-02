@@ -162,6 +162,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         snoozeDurationSec: _settings.snoozeDurationSec,
         restDurationSec: _timer.restDurationSec,
         themeMode: _settings.themeMode.index,
+        forceRecreate: true,
       );
     }
   }

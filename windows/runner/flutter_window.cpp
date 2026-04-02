@@ -3,6 +3,8 @@
 #include <optional>
 
 #include <desktop_multi_window/desktop_multi_window_plugin.h>
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -42,6 +44,53 @@ FlutterWindow::FlutterWindow(const flutter::DartProject& project)
 
 FlutterWindow::~FlutterWindow() {}
 
+void FlutterWindow::RegisterWindowMetricsChannel() {
+  window_metrics_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(),
+          "greenish/window_metrics",
+          &flutter::StandardMethodCodec::GetInstance());
+
+  window_metrics_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        if (call.method_name() != "getCurrentMonitorMetrics") {
+          result->NotImplemented();
+          return;
+        }
+
+        // Use the primary monitor (origin point 0,0) so the reminder popup
+        // always appears on the user's primary display, regardless of which
+        // monitor the main window is currently on.
+        const POINT origin = {0, 0};
+        const HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO monitor_info;
+        monitor_info.cbSize = sizeof(monitor_info);
+        if (!GetMonitorInfo(monitor, &monitor_info)) {
+          result->Error("monitor-unavailable", "Failed to query monitor work area.");
+          return;
+        }
+
+        const UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+        const double scale_factor = static_cast<double>(dpi) / 96.0;
+        const RECT work_area = monitor_info.rcWork;
+
+        flutter::EncodableMap metrics;
+        metrics[flutter::EncodableValue("left")] =
+            flutter::EncodableValue(static_cast<double>(work_area.left));
+        metrics[flutter::EncodableValue("top")] =
+            flutter::EncodableValue(static_cast<double>(work_area.top));
+        metrics[flutter::EncodableValue("width")] =
+            flutter::EncodableValue(static_cast<double>(work_area.right - work_area.left));
+        metrics[flutter::EncodableValue("height")] =
+            flutter::EncodableValue(static_cast<double>(work_area.bottom - work_area.top));
+        metrics[flutter::EncodableValue("scaleFactor")] =
+            flutter::EncodableValue(scale_factor);
+        result->Success(flutter::EncodableValue(metrics));
+      });
+}
+
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
@@ -58,6 +107,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  RegisterWindowMetricsChannel();
 
   // When desktop_multi_window creates a reminder sub-window, apply borderless
   // + topmost styles. The callback runs on the UI thread right after the

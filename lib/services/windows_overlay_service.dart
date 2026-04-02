@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 /// Manages the Windows reminder popup (sub-window).
 ///
@@ -14,19 +15,14 @@ import 'package:flutter/foundation.dart';
 ///   Main → Sub : 'updateTick' '$remaining/$total'  (timer sync)
 ///   Sub  → Main: 'overlayAction' 'snooze'|'skip'|'done'
 class WindowsOverlayService extends ChangeNotifier {
+  static const MethodChannel _windowMetricsChannel = MethodChannel(
+    'greenish/window_metrics',
+  );
+
   WindowsOverlayService() {
     DesktopMultiWindow.setMethodHandler((call, fromWindowId) async {
       if (call.method == 'overlayAction') {
-        final action = call.arguments as String?;
-        if (action == 'snooze') {
-          onSnooze?.call();
-        } else if (action == 'skip') {
-          onSkip?.call();
-        } else if (action == 'done') {
-          // Sub-window counted down to zero and closed itself; clean up state.
-          _overlayWindow = null;
-          notifyListeners();
-        }
+        handleOverlayAction(call.arguments as String?);
       }
       return '';
     });
@@ -39,8 +35,9 @@ class WindowsOverlayService extends ChangeNotifier {
   VoidCallback? onSkip;
 
   WindowController? _overlayWindow;
+  bool _overlayVisible = false;
 
-  bool get isOverlayVisible => _overlayWindow != null;
+  bool get isOverlayVisible => _overlayVisible;
 
   /// Creates and shows the reminder sub-window.
   ///
@@ -50,8 +47,12 @@ class WindowsOverlayService extends ChangeNotifier {
     required int snoozeDurationSec,
     required int restDurationSec,
     int themeMode = 0,
+    bool forceRecreate = false,
   }) async {
-    if (_overlayWindow != null) return;
+    if (_overlayVisible) {
+      if (!forceRecreate) return;
+      await dismissOverlay();
+    }
 
     final args = jsonEncode({
       'snoozeDurationSec': snoozeDurationSec,
@@ -62,6 +63,7 @@ class WindowsOverlayService extends ChangeNotifier {
     try {
       final controller = await DesktopMultiWindow.createWindow(args);
       _overlayWindow = controller;
+      _overlayVisible = true;
       await _positionAndShow(controller);
       notifyListeners();
     } catch (e) {
@@ -74,26 +76,93 @@ class WindowsOverlayService extends ChangeNotifier {
     const overlayW = 320.0;
     const overlayH = 220.0;
     const margin = 8.0;
-    const taskbarH = 48.0;
-
-    double screenW = 1920;
-    double screenH = 1080;
-    final displays = PlatformDispatcher.instance.displays;
-    if (displays.isNotEmpty) {
-      final d = displays.first;
-      screenW = d.size.width / d.devicePixelRatio;
-      screenH = d.size.height / d.devicePixelRatio;
-    }
-
-    final x = screenW - overlayW - margin;
-    final y = screenH - overlayH - taskbarH - margin;
 
     try {
-      await controller.setFrame(Rect.fromLTWH(x, y, overlayW, overlayH));
+      final metrics = await _getCurrentMonitorMetrics();
+      final frame = metrics != null
+          ? computeOverlayFrame(
+              metrics.workArea,
+              scaleFactor: metrics.scaleFactor,
+              overlaySize: const Size(overlayW, overlayH),
+              margin: margin,
+            )
+          : _fallbackOverlayFrame(
+              overlaySize: const Size(overlayW, overlayH),
+              margin: margin,
+            );
+      await controller.setFrame(frame);
     } catch (_) {}
     try {
       await controller.show();
     } catch (_) {}
+  }
+
+  @visibleForTesting
+  Rect computeOverlayFrame(
+    Rect workArea, {
+    required double scaleFactor,
+    required Size overlaySize,
+    required double margin,
+  }) {
+    final physicalOverlayW = overlaySize.width * scaleFactor;
+    final physicalOverlayH = overlaySize.height * scaleFactor;
+    final physicalMargin = margin * scaleFactor;
+
+    return Rect.fromLTWH(
+      workArea.right - physicalOverlayW - physicalMargin,
+      workArea.bottom - physicalOverlayH - physicalMargin,
+      physicalOverlayW,
+      physicalOverlayH,
+    );
+  }
+
+  /// Gets the work area and scale factor of the **primary** monitor from the
+  /// native side, so the reminder popup always appears on the primary display.
+  Future<_MonitorMetrics?> _getCurrentMonitorMetrics() async {
+    try {
+      final result = await _windowMetricsChannel
+          .invokeMapMethod<String, double>('getCurrentMonitorMetrics');
+      if (result == null) return null;
+
+      final left = result['left'];
+      final top = result['top'];
+      final width = result['width'];
+      final height = result['height'];
+      final scaleFactor = result['scaleFactor'];
+      if (left == null ||
+          top == null ||
+          width == null ||
+          height == null ||
+          scaleFactor == null) {
+        return null;
+      }
+
+      return _MonitorMetrics(
+        workArea: Rect.fromLTWH(left, top, width, height),
+        scaleFactor: scaleFactor,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Rect _fallbackOverlayFrame({
+    required Size overlaySize,
+    required double margin,
+  }) {
+    final displays = PlatformDispatcher.instance.displays;
+    if (displays.isNotEmpty) {
+      final display = displays.first;
+      return Rect.fromLTWH(
+        display.size.width - overlaySize.width - margin,
+        display.size.height - overlaySize.height - margin,
+        overlaySize.width,
+        overlaySize.height,
+      );
+    }
+
+    return Rect.fromLTWH(1920 - overlaySize.width - margin,
+        1080 - overlaySize.height - margin, overlaySize.width, overlaySize.height);
   }
 
   /// Forwards a timer tick to the reminder sub-window for sync.
@@ -112,13 +181,49 @@ class WindowsOverlayService extends ChangeNotifier {
   /// Closes the reminder sub-window and resets state.
   Future<void> dismissOverlay() async {
     final w = _overlayWindow;
+    if (!_overlayVisible && w == null) return;
+    _clearOverlayState();
     if (w == null) return;
-    _overlayWindow = null;
-    notifyListeners();
     try {
       await w.close();
     } catch (_) {
       // Sub-window may have already closed itself (countdown finished).
     }
   }
+
+  void handleOverlayAction(String? action) {
+    if (action == null) return;
+
+    if (action == 'snooze' || action == 'skip' || action == 'done') {
+      _clearOverlayState();
+    }
+
+    if (action == 'snooze') {
+      onSnooze?.call();
+    } else if (action == 'skip') {
+      onSkip?.call();
+    }
+  }
+
+  @visibleForTesting
+  void debugSetOverlayVisible(bool visible) {
+    _overlayVisible = visible;
+    if (!visible) {
+      _overlayWindow = null;
+    }
+  }
+
+  void _clearOverlayState() {
+    if (!_overlayVisible && _overlayWindow == null) return;
+    _overlayVisible = false;
+    _overlayWindow = null;
+    notifyListeners();
+  }
+}
+
+class _MonitorMetrics {
+  const _MonitorMetrics({required this.workArea, required this.scaleFactor});
+
+  final Rect workArea;
+  final double scaleFactor;
 }
